@@ -1,0 +1,34 @@
+steps:
+  - pwsh: |
+      dotnet tool install --global GitVersion.Tool --version 5.*
+      "
+      assembly-versioning-scheme: MajorMinorPatch
+      mode: ContinuousDeployment
+      branches:
+        main:
+          tag: 'dev'
+          increment: minor
+        feature:
+          increment: minor
+      ignore:
+        sha: []
+      " > $(Build.SourcesDirectory)/GitVersion.yml
+      dotnet-gitversion /nonormalize
+      $output = dotnet-gitversion /nonormalize | ConvertFrom-Json
+
+      # arrange values
+      $mmp = $output.MajorMinorPatch
+      $label = $output.PreReleaseLabel
+      $build = $output.PreReleaseNumber
+
+      # create SemVer
+      if($label -eq "dev"){
+        $semVer = "$mmp"
+      }
+      else{
+        $semVer = "$($mmp)a$build"
+      }
+
+      Write-Host "##vso[task.setvariable variable=SemVer]$semVer"
+      Write-Host "##vso[build.updatebuildnumber]$semVer"
+    displayName: "Set semantic version"
