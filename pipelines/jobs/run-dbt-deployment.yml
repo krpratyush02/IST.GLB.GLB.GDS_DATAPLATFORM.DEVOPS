@@ -1,0 +1,90 @@
+parameters:
+# DBT Command to execute
+- name: dbtCommands
+  type: object
+  default:
+    - run
+    - test
+    - docs generate
+# Path to the dbt project
+- name: projectWorkingDirectory 
+  type: string
+  default: $(projectWorkingDirectory)
+- name: azureDevopsEnvironment 
+  type: string
+  default: DEV_SEMANTIC
+- name: fixDocumentation
+  type: boolean
+  default: true  
+- name: dependsOn
+  type: object
+  default: []
+- name: dremioSpace
+  type: string
+  default: default
+- name: dremioDbtVersion
+  type: string
+  default: 1.5.1
+
+jobs:
+  - deployment: dbt_deployment
+    displayName: "Execute DBT deployment"
+    timeoutInMinutes: 100
+    workspace:
+      clean: all
+    environment: "${{ parameters.azureDevopsEnvironment }}"
+    dependsOn: ${{ parameters.dependsOn }}
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+            - checkout: self
+              # https://github.com/GitTools/actions/blob/main/docs/examples/github/gitversion/execute/usage-examples.md#execute-gitversion-action-gitversionexecute-usage-examples
+              fetchDepth: 0
+            - script: |
+                pip install dbt-dremio==${{ parameters.dremioDbtVersion }}
+                pip install pip-system-certs
+              displayName: 'Install dbt'
+            - task: qetza.replacetokens.replacetokens-task.replacetokens@3
+              displayName: "Replace tokens in profile"
+              inputs:
+                targetFiles: |
+                  **/profiles.yml
+                  **/dbt_project.yml
+                enableTransforms: 'true'
+                rootDirectory: ${{ parameters.projectWorkingDirectory }}
+                escapeType: 'none'
+            - ${{ each value in parameters.dbtCommands }}:
+              - script: |
+                  cd ${{ parameters.projectWorkingDirectory }}
+                  dbt ${{ value }} --target parametrized
+                displayName: 'Run DBT command ${{ parameters.dbtCommand }}'
+            - task: PythonScript@0
+              inputs:
+                scriptSource: 'inline'
+                script: |
+                  import json
+
+                  search_str = 'o=[i("manifest","manifest.json"+t),i("catalog","catalog.json"+t)]'
+
+                  with open('target/index.html', 'r', encoding="utf8") as f:
+                      content_index = f.read()
+                      
+                  with open('target/manifest.json', 'r', encoding="utf8") as f:
+                      json_manifest = json.loads(f.read())
+
+                  with open('target/catalog.json', 'r', encoding="utf8") as f:
+                      json_catalog = json.loads(f.read())
+                      
+                  with open('target/full_index.html', 'w', encoding="utf8") as f:
+                      new_str = "o=[{label: 'manifest', data: "+json.dumps(json_manifest)+"},{label: 'catalog', data: "+json.dumps(json_catalog)+"}]"
+                      new_content = content_index.replace(search_str, new_str)
+                      f.write(new_content)
+                workingDirectory: ${{ parameters.projectWorkingDirectory }}
+              condition: |  
+                and(
+                    succeeded(),
+                    eq('${{ parameters.fixDocumentation }}', true)
+                )
+            - publish: ${{ parameters.projectWorkingDirectory }}/target
+              artifact: dbt_artifact_${{ lower(parameters.azureDevopsEnvironment) }}_${{ lower(parameters.dremioSpace) }}
