@@ -1,0 +1,265 @@
+parameters:
+# Path to the repo to generate changelog
+- name: repositoryPath 
+  type: string
+  default: $(Build.SourcesDirectory)
+# Branch with latest changes for comparison
+- name: changelogRef 
+  type: string
+  default: '$(Build.SourceBranch)'
+# Where changelog should be saved
+- name: outputFilePath 
+  type: string
+  default: '$(Build.ArtifactStagingDirectory)/CHANGELOG.md'
+# Name of the azure devops organization
+- name: organizationName 
+  type: string
+  default: 'sdxcloud'
+# Name of the azure devops organization
+- name: targetWikiPath 
+  type: string
+  default: 'Data and Analytics Platform/Data Asset Builder/Changelog/$(Build.Repository.Name)'
+# Name of the azure devops organization
+- name: targetWikiName 
+  type: string
+  default: 'IST.GLB.GLB.GDS_DATAPLATFORM.wiki'
+# Whether to generate changelog
+- name: generateChangelog 
+  type: boolean
+  default: false
+# Whether to publish changelog in the wiki
+- name: publishChangelog 
+  type: boolean
+  default: false
+
+jobs:
+  - job: changelog
+    displayName: Generate changelog
+    steps:
+      - checkout: self
+        # https://github.com/GitTools/actions/blob/main/docs/examples/github/gitversion/execute/usage-examples.md#execute-gitversion-action-gitversionexecute-usage-examples
+        fetchDepth: 0
+      - task: PowerShell@2
+        displayName: 'Generate changelog'
+        condition: |
+          and(
+              succeeded(),
+              eq('${{ parameters.generateChangelog }}', true)
+          )
+        inputs:
+          targetType: 'inline'
+          script: |
+              $RepositoryPath   = '${{ parameters.repositoryPath }}'
+              $ChangelogRef     = '${{ parameters.changelogRef }}'.replace("refs/heads/", "").replace("refs/tags/", "")
+              $OutputFilePath   = '${{ parameters.outputFilePath }}'
+              $OrganizationName = '${{ parameters.organizationName }}'
+              $PAT              = '$(System.AccessToken)'
+
+              function Run-CliCommand([string] $azCommand, [bool] $failOnError = $true){
+                  $output = (Invoke-Expression -Command $azCommand 2>&1)
+                  if($LASTEXITCODE -ne 0){
+                      Write-Error "Command failed`nOutput: $output`nError: $($Error[0])"
+                      if($failOnError){
+                          exit 1
+                      }
+                  }
+                  return $output
+              }
+
+              function Test-IfContainsAny([array] $ListA, [array] $ListB){
+              foreach($obj in $ListA){
+                  if($ListB -contains $obj){
+                  return $true
+                  }
+              }
+              return $false
+              }
+
+              $templateContent = @"
+              # Changelog
+              Automatically generated changelog. Below you can find all work items that have been implemented in between "old" and "new" version.
+
+              **Generated at:** #{DATE}#
+
+              **Based on commits between:** #{OLD_VERSION}# <===> #{NEW_VERSION}#
+
+              # Work items
+              | User story | Children work items | Pull requests | Assignee | Completion iteration |
+              |------------|---------------------|---------------|----------|--------------------- |
+              #{CHANGELOG_ROWS}#
+              "@
+
+              # set authentication
+              $env:AZURE_DEVOPS_EXT_PAT = $PAT
+
+              # set default organization
+              Run-CliCommand "az config set extension.use_dynamic_install=yes_without_promp"
+              Run-CliCommand "az devops configure --defaults organization=https://dev.azure.com/$OrganizationName/"
+
+              # get most recent tag, exclude the changelog ref if it's a tag
+              Write-Output "Getting latest tag"
+              $tags = @()
+              $tags += Run-CliCommand "git tag --sort=committerdate" | Where-Object { $_ -ne $ChangelogRef }
+              
+              # List commit hashes in between changelog ref and latest tag
+              if($tags -ne $null){
+                  $latestTag = $tags[$tags.Count-1]
+                  Write-Output "Latest tag found, it's $latestTag"
+                  $commitList = Run-CliCommand "git log --pretty=format:%s $latestTag..HEAD"
+              }
+              else{
+                  $latestTag = '0.0.0'
+                  Write-Output "Latest tag not found, proceeding with changelog for all commits"
+                  $commitList = Run-CliCommand "git log --pretty=format:%s HEAD"
+              }
+
+              # get commit messages from merge commits
+              Write-Output "Processing commit messages"
+              $listOfMergeCommits = $commitList | Where-Object { $_.StartsWith("Merged PR") }
+              Write-Output "Found $($listOfMergeCommits.Count) commit messages matching message 'Merged PR'"
+
+              $listOfPRIds = $listOfMergeCommits | ForEach-Object { $_.Split(" ")[2].Replace(":", "") }
+              Write-Output "Extracted following PR ids:`n$listOfPrIds"
+
+              $PRDetails = @()
+
+              # get PR details and work items for each ID
+              foreach($id in $listOfPRIds){
+                  $PRDetailsEntry = @{}
+                  Write-Output "Fetching details of PR no. $id"
+                  $output = Run-CliCommand "az repos pr show --id $id" | ConvertFrom-Json
+
+                  $PRDetailsEntry.ID = $id
+                  $PRDetailsEntry.WorkItems = $output.workItemRefs.id
+
+                  $PRDetails += $PRDetailsEntry
+              }
+
+              $changelogItems = @()
+              # get all user stories
+              foreach($workItem in $($PRDetails.WorkItems | Select-Object -Unique)){
+                  Write-Output "Processing linked work item no. $workItem"
+                  $workItemDetails = Run-CliCommand "az boards work-item relation show --id $workItem" | ConvertFrom-Json
+                  # if work item is task/issue get parent user story details
+                  if($workItemDetails.fields.'System.WorkItemType' -ne "User Story" -and $workItemDetails.fields.'System.WorkItemType' -ne "Bug"){
+                      Write-Output "Work item is not an user story or bug, searching for parent"
+                      $parent = $workItemDetails.relations | Where-Object { $_.attributes.name -eq "Parent" }
+
+                      # if there's no parent, skip this work item
+                      if($parent -ne $null){
+                          $parentSplitted = $parent.url.Split("/")
+                      }
+                      else{
+                          Write-Output "Parent not found for work item $workItem, skipping."
+                          continue;
+                      }
+
+                      Write-Output "Found parent for $workItem, it's $($parentSplitted[$parentSplitted.Count-1])"
+                      $workItemDetails = Run-CliCommand "az boards work-item relation show --id $($parentSplitted[$parentSplitted.Count-1])" | ConvertFrom-Json
+                  }
+
+                  # if parent was not user story or bug as well, skip this work item.
+                  if($workItemDetails.fields.'System.WorkItemType' -ne "User Story" -and $workItemDetails.fields.'System.WorkItemType' -ne "Bug"){
+                      Write-Output "Parent is not an user story or bug, skipping $workItem"
+                      continue;
+                  }
+
+                  # get required properties
+                  $changelogItem = @{}
+                  $changelogItem.Iteration = $workItemDetails.fields.'System.IterationPath'
+                  $changelogItem.UserStoryID = $workItemDetails.fields.'System.Id'
+                  $changelogItem.Assignee = $workItemDetails.fields.'System.AssignedTo'.DisplayName
+                  $changelogItem.Tasks = @()
+                  $childObjects = $workItemDetails.relations | Where-Object { $_.attributes.name -eq "Child" }
+                  
+                  # if there're children
+                  if($childObjects -ne $null){
+                      Write-Output "Extracting children work items for user story $($changelogItem.UserStoryID)"
+                      $splittedChildObjects = $childObjects.url.Split("/")
+
+                      # get every 8th element from array which is child ID
+                      0..($splittedChildObjects.Count) | ForEach-Object {
+                          if((($_+1) % 8 ) -eq 0){
+                              $changelogItem.Tasks += $splittedChildObjects[$_]
+                          }
+                      }
+                  }
+
+                  Write-Output "Found $($changelogItem.Tasks.Count) children items"
+                  if($changelogItems.UserStoryID -notcontains $changelogItem.UserStoryID){
+                      $changelogItems += $changelogItem
+                  }
+              }
+
+              # prepare md table rows
+              Write-Output "Processing changelog template.."
+              $mdTableRows = ""
+              foreach($item in $changelogItems){
+                  $line = ""
+                  $line += "#$($item.UserStoryID) |"
+                  $line += " $(($item.Tasks | ForEach-Object { $_.Insert(0, "#") }) -join ' <br /> ') |"
+                  $line += " $((($PRDetails | Where-Object { (Test-IfContainsAny $item.Tasks $_.WorkItems) -or $item.UserStoryId -in $_.WorkItems }).ID | `
+                      ForEach-Object { if ($_ -ne $null) { $_.Insert(0, "!") }}) -join ' <br /> ') |"
+                  $line += "$($item.Assignee)|"
+                  $line += "$($item.Iteration)|`n"
+                  $mdTableRows += $line
+              }
+
+              $changelogDate = Get-Date
+
+              # replace placeholders
+              $templateContent = $templateContent.replace("#{DATE}#", $changelogDate)
+              $templateContent = $templateContent.replace("#{OLD_VERSION}#", $latestTag)
+              $templateContent = $templateContent.replace("#{NEW_VERSION}#", $ChangelogRef)
+              $templateContent = $templateContent.replace("#{CHANGELOG_ROWS}#", $mdTableRows)
+
+              # save changelog in destination
+              $templateContent | Out-File -FilePath $OutputFilePath
+      - task: PowerShell@2
+        displayName: 'Publish changelog'
+        condition: |
+          and(
+              succeeded(),
+              eq('${{ parameters.publishChangelog }}', true),
+              eq('${{ parameters.generateChangelog }}', true)
+          )
+        inputs:
+          targetType: 'inline'
+          powerShellIgnoreLASTEXITCODE: true
+          script: |
+              # set default organization
+              az config set extension.use_dynamic_install=yes_without_promp
+              az devops configure --defaults organization=https://dev.azure.com/${{ parameters.organizationName }}/
+
+              # set authentication
+              $env:AZURE_DEVOPS_EXT_PAT = '$(System.AccessToken)'
+
+              $ref = '${{ parameters.changelogRef }}'
+              $ref = $ref.replace("refs/heads/", "").replace("refs/tags/", "").replace("/", "")
+
+              # get md content
+              $eTag = az devops wiki page show --path "${{ parameters.targetWikiPath }}" --wiki '${{ parameters.targetWikiName }}' --project $(System.TeamProject) --query eTag -o tsv
+              
+              if($eTag -eq $null){
+                az devops wiki page create --path "${{ parameters.targetWikiPath }}" --wiki '${{ parameters.targetWikiName }}' --content "**Automatically generated changelog**" --project $(System.TeamProject)
+              }
+              else{
+                az devops wiki page update --path "${{ parameters.targetWikiPath }}" --wiki '${{ parameters.targetWikiName }}' --content "**Automatically generated changelog**" --project $(System.TeamProject) --version $eTag
+              }
+
+              $eTag = $null
+              $eTag = az devops wiki page show --path "${{ parameters.targetWikiPath }}/$ref" --wiki '${{ parameters.targetWikiName }}' --project $(System.TeamProject) --query eTag -o tsv
+
+              if($eTag -eq $null){
+                az devops wiki page create --path "${{ parameters.targetWikiPath }}/$ref" --wiki '${{ parameters.targetWikiName }}' --file-path ${{ parameters.outputFilePath }} --project $(System.TeamProject)
+              }
+              else{
+                az devops wiki page update --path "${{ parameters.targetWikiPath }}/$ref" --wiki '${{ parameters.targetWikiName }}' --file-path ${{ parameters.outputFilePath }} --project $(System.TeamProject) --version $eTag
+              }
+      - publish: '${{ parameters.outputFilePath }}'
+        condition: |
+          and(
+              succeeded(),
+              eq('${{ parameters.generateChangelog }}', true)
+          )
+        artifact: changelog
