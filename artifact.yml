@@ -1,0 +1,24 @@
+- task: PowerShell@2
+  displayName: Filter Files Based on Environment
+  inputs:
+    targetType: 'inline'
+    script: |
+      $scriptsPath = "$(Pipeline.Workspace)/data_product"
+      $filteredPath = "$(Pipeline.Workspace)/filtered_data"
+
+      # Create output folder
+      if (-not (Test-Path $filteredPath)) {
+        New-Item -ItemType Directory -Force -Path $filteredPath
+      }
+
+      # Filter files based on the "environment" key
+      Get-ChildItem -Path $scriptsPath -Filter "*.json" -Recurse | ForEach-Object {
+        $content = Get-Content -Path $_.FullName | ConvertFrom-Json
+        if ($content.environment -eq "PROD") {
+          Copy-Item -Path $_.FullName -Destination $filteredPath
+        } elseif ($content.environment -ne "PROD" -and "$env:BUILD_STAGE" -ne "PROD") {
+          Copy-Item -Path $_.FullName -Destination $filteredPath
+        }
+      }
+
+      Write-Output "Filtered files are in $filteredPath"
