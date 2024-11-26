@@ -1,0 +1,305 @@
+name: $(Year:yyyy).$(Month).$(Date:dd)$(Rev:.r)
+
+# trigger:
+#   branches:
+#     include:
+#       - refs/tags/*
+#       - main
+
+trigger: none
+
+pr: none
+
+parameters:
+# Selection of region
+- name: regions
+  type: string
+  values:
+    - EU
+    - NORAM
+    - APAC
+    - All
+
+variables:
+  - name: is_main
+    value: "$[eq(variables['Build.SourceBranch'], 'refs/heads/main')]"
+  - name: is_release
+    value: "$[startsWith(variables['Build.SourceBranch'], 'refs/tags/')]"
+  #- template: /pipelines/variables/common.yml
+
+stages:
+# Building Artifact for EU Region
+  - stage: artifact_EU
+    displayName: Build artifact
+    condition: |
+      and(
+        succeeded(),
+        or(
+          eq(variables.is_main, 'true'),
+          eq(variables.is_release, 'true'),
+          eq(variables['Build.Reason'], 'Manual'),
+          eq(variables['Build.Reason'], 'PullRequest')
+        ),
+        or(
+          eq('${{ parameters.regions }}', 'EU'),
+          eq('${{ parameters.regions }}', 'All')
+        )
+      )
+    jobs:
+      - template: /pipelines/jobs/artifact-data-product-registry.yml
+        parameters:
+          sourcePath: data_product/EU/**
+          scriptPath: scripts/**
+    #   - template: /pipelines/jobs/validation-data-asset-registry.yml
+    #     parameters:
+    #       dependsOn: [ data_asset_registry_artifact ]
+    dependsOn: []
+
+# Deployment to EU
+  - stage: dev_EU
+    displayName: Deploy to DEV_EU
+    variables:
+      - template: /pipelines/variables/environment/dev.yml
+    condition: |
+      and(
+        succeeded(),
+        or(
+          eq(variables.is_main, 'true'),
+          eq(variables['Build.Reason'], 'Manual'),
+          eq(variables.is_release, 'true')
+        ),
+        or(
+          eq('${{ parameters.regions }}', 'EU'),
+          eq('${{ parameters.regions }}', 'All')
+        )
+      )
+    jobs:
+      - template: /pipelines/jobs/deploy-data-product-registry.yml
+        parameters:
+          armConnectionName: "SPN - DEVRG67"
+          azure_devops_environment: "DEV_ANALYTICS"
+    dependsOn: [ artifact_EU ]
+
+  - stage: uat_EU
+    displayName: Deploy to UAT_EU
+    variables:
+      - template: /pipelines/variables/environment/uat.yml
+    condition: |
+      and(
+        succeeded(),
+        eq(variables.is_release, 'true'),
+        or(
+          eq('${{ parameters.regions }}', 'EU'),
+          eq('${{ parameters.regions }}', 'All')
+        )
+      )
+    jobs:
+      - template: /pipelines/jobs/deploy-data-product-registry.yml
+        parameters:
+          armConnectionName: "SPN - UATRG67"
+          azure_devops_environment: "UAT_EU_ANALYTICS"
+    dependsOn: [ artifact_EU ]
+
+  - stage: prod_EU
+    displayName: Deploy to PROD_EU
+    variables:
+      - template: /pipelines/variables/environment/prod.yml
+    condition: |
+      and(
+        succeeded(),
+        eq(variables.is_release, 'true'),
+        or(
+          eq('${{ parameters.regions }}', 'EU'),
+          eq('${{ parameters.regions }}', 'All')
+        )
+      )
+    jobs:
+      - template: /pipelines/jobs/deploy-data-product-registry.yml
+        parameters:
+          armConnectionName: "SPN - PRODRG67"
+          azure_devops_environment: "PROD_ANALYTICS"
+    dependsOn: [ artifact_EU, uat_EU ]
+
+# Building Artifact for NORAM Region
+  - stage: artifact_NORAM
+    displayName: Build artifact
+    condition: |
+      and(
+        succeeded(),
+        or(
+          eq(variables.is_main, 'true'),
+          eq(variables.is_release, 'true'),
+          eq(variables['Build.Reason'], 'Manual'),
+          eq(variables['Build.Reason'], 'PullRequest')
+        ),
+        or(
+          eq('${{ parameters.regions }}', 'NORAM'),
+          eq('${{ parameters.regions }}', 'All')
+        )
+      )
+    jobs:
+      - template: /pipelines/jobs/artifact-data-product-registry.yml
+        parameters:
+          sourcePath: data_product/NORAM/**
+          scriptPath: scripts/**
+    #   - template: /pipelines/jobs/validation-data-asset-registry.yml
+    #     parameters:
+    #       dependsOn: [ data_asset_registry_artifact ]
+    dependsOn: []
+
+# Deployment to NORAM
+  - stage: dev_NORAM
+    displayName: Deploy to DEV_NORAM
+    variables:
+      - template: /pipelines/variables/environment/devNORAM.yml
+    condition: |
+      and(
+        succeeded(),
+        or(
+          eq(variables.is_main, 'true'),
+          eq(variables['Build.Reason'], 'Manual'),
+          eq(variables.is_release, 'true')
+        ),
+        or(
+          eq('${{ parameters.regions }}', 'NORAM'),
+          eq('${{ parameters.regions }}', 'All')
+        )
+      )
+    jobs:
+      - template: /pipelines/jobs/deploy-data-product-registry.yml
+        parameters:
+          armConnectionName: "SPN - NADEVRG67"
+          azure_devops_environment: "DEV_NORAM_ANALYTICS"
+    dependsOn: [ artifact_NORAM ]
+
+  - stage: uat_NORAM
+    displayName: Deploy to UAT_NORAM
+    variables:
+      - template: /pipelines/variables/environment/uatNORAM.yml
+    condition: |
+      and(
+        succeeded(),
+        eq(variables.is_release, 'true'),
+        or(
+          eq('${{ parameters.regions }}', 'NORAM'),
+          eq('${{ parameters.regions }}', 'All')
+        )
+      )
+    jobs:
+      - template: /pipelines/jobs/deploy-data-product-registry.yml
+        parameters:
+          armConnectionName: "SPN - NAUATRG67"
+          azure_devops_environment: "UAT_NORAM_ANALYTICS"
+    dependsOn: [ artifact_NORAM ]
+
+  - stage: prod_NORAM
+    displayName: Deploy to PROD_NORAM
+    variables:
+      - template: /pipelines/variables/environment/prodNORAM.yml
+    condition: |
+      and(
+        succeeded(),
+        eq(variables.is_release, 'true'),
+        or(
+          eq('${{ parameters.regions }}', 'NORAM'),
+          eq('${{ parameters.regions }}', 'All')
+        )
+      )
+    jobs:
+      - template: /pipelines/jobs/deploy-data-product-registry.yml
+        parameters:
+          armConnectionName: "SPN - NAPRODRG67"
+          azure_devops_environment: "PROD_NORAM_ANALYTICS"
+    dependsOn: [ artifact_NORAM, uat_NORAM ]
+
+# Building Artifact for APAC Region
+  - stage: artifact_APAC
+    displayName: Build artifact
+    condition: |
+      and(
+        succeeded(),
+        or(
+          eq(variables.is_main, 'true'),
+          eq(variables.is_release, 'true'),
+          eq(variables['Build.Reason'], 'Manual'),
+          eq(variables['Build.Reason'], 'PullRequest')
+        ),
+        or(
+          eq('${{ parameters.regions }}', 'APAC'),
+          eq('${{ parameters.regions }}', 'All')
+        )
+      )
+    jobs:
+      - template: /pipelines/jobs/artifact-data-product-registry.yml
+        parameters:
+          sourcePath: data_product/APAC/**
+          scriptPath: scripts/**
+    #   - template: /pipelines/jobs/validation-data-asset-registry.yml
+    #     parameters:
+    #       dependsOn: [ data_asset_registry_artifact ]
+    dependsOn: []
+
+# Deployment to APAC
+  - stage: dev_APAC
+    displayName: Deploy to DEV_APAC
+    variables:
+      - template: /pipelines/variables/environment/devAPAC.yml
+    condition: |
+      and(
+        succeeded(),
+        or(
+          eq(variables.is_main, 'true'),
+          eq(variables['Build.Reason'], 'Manual'),
+          eq(variables.is_release, 'true')
+        ),
+        or(
+          eq('${{ parameters.regions }}', 'APAC'),
+          eq('${{ parameters.regions }}', 'All')
+        )
+      )
+    jobs:
+      - template: /pipelines/jobs/deploy-data-product-registry.yml
+        parameters:
+          armConnectionName: "SPN - SGDEVRG67"
+          azure_devops_environment: "DEV_APAC_ANALYTICS"
+    dependsOn: [ artifact_APAC ]
+
+  - stage: uat_APAC
+    displayName: Deploy to UAT_APAC
+    variables:
+      - template: /pipelines/variables/environment/uatAPAC.yml
+    condition: |
+      and(
+        succeeded(),
+        eq(variables.is_release, 'true'),
+        or(
+          eq('${{ parameters.regions }}', 'APAC'),
+          eq('${{ parameters.regions }}', 'All')
+        )
+      )
+    jobs:
+      - template: /pipelines/jobs/deploy-data-product-registry.yml
+        parameters:
+          armConnectionName: "SPN - SGUATRG67"
+          azure_devops_environment: "UAT_APAC_ANALYTICS"
+    dependsOn: [ artifact_APAC ]
+
+  - stage: prod
+    displayName: Deploy to PROD_APAC
+    variables:
+      - template: /pipelines/variables/environment/prodAPAC.yml
+    condition: |
+      and(
+        succeeded(),
+        eq(variables.is_release, 'true'),
+        or(
+          eq('${{ parameters.regions }}', 'APAC'),
+          eq('${{ parameters.regions }}', 'All')
+        )
+      )
+    jobs:
+      - template: /pipelines/jobs/deploy-data-product-registry.yml
+        parameters:
+          armConnectionName: "SPN - SGPRODRG67"
+          azure_devops_environment: "PROD_APAC_ANALYTICS"
+    dependsOn: [ artifact_APAC, uat_APAC ]
